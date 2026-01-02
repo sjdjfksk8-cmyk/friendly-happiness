@@ -1,206 +1,108 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
-  <title>Саня в школу, бля — 2D v3</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>VR Hands Tracking на телефоне</title>
   <style>
-    body { margin: 0; overflow: hidden; background: #000; font-family: Arial, sans-serif; color: white; touch-action: none; }
-    #loader { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 40px; z-index: 30; text-shadow: 0 0 10px red; pointer-events: none; }
-    #ui { position: absolute; top: 10px; left: 10px; font-size: 18px; pointer-events: none; z-index: 10; text-shadow: 1px 1px 3px black; }
-    #message { position: absolute; top: 40%; left: 50%; transform: translate(-50%, -50%); color: lime; font-size: 28px; background: rgba(0,0,0,0.8); padding: 25px; border-radius: 12px; display: none; pointer-events: none; z-index: 20; text-align: center; max-width: 90%; }
-    #unmute-all-btn { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); padding: 20px 40px; background: #c00; color: white; border: none; font-size: 24px; cursor: pointer; z-index: 25; display: none; border-radius: 12px; }
-    #virtual-e { position: absolute; bottom: 30px; right: 30px; width: 80px; height: 80px; background: rgba(255,255,255,0.3); color: white; font-size: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; z-index: 15; pointer-events: all; }
+    body { margin: 0; overflow: hidden; background: #000; touch-action: none; }
+    #start { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); padding: 30px 60px; background: #c00; color: white; border: none; font-size: 32px; cursor: pointer; z-index: 30; border-radius: 20px; box-shadow: 0 0 20px red; text-align: center; }
+    #overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 10; }
+    #msg { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #0f0; font-size: 50px; background: rgba(0,0,0,0.7); padding: 40px; border-radius: 20px; display: none; pointer-events: none; z-index: 20; text-align: center; max-width: 90%; }
   </style>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/hands.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js" crossorigin="anonymous"></script>
 </head>
 <body>
-  <div id="loader">Загружается, сука... 😈</div>
-  <div id="ui">WASD / стрелки — ходи, E — взаимодействовать<br>На мобилке: свайпай + большая кнопка E</div>
-  <div id="message"></div>
-  <button id="unmute-all-btn">ВКЛ ЗВУК (тапни сюда)</button>
-  <div id="virtual-e">E</div>
+  <button id="start">ТАПНИ → КАМЕРА + РУКИ</button>
+  <video id="video" autoplay playsinline style="position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;"></video>
+  <canvas id="overlay"></canvas>
+  <div id="msg">Братишка плачет за дверью... 😢</div>
 
-  <canvas id="canvas"></canvas>
+  <audio id="sad" src="https://www.myinstants.com/media/sounds/sadkid.mp3"></audio>
 
   <script>
-    // Loader
-    setTimeout(() => document.getElementById('loader').style.display = 'none', 2500);
+    const startBtn = document.getElementById('start');
+    const msg = document.getElementById('msg');
+    const sad = document.getElementById('sad');
+    let pinchActive = false;
 
-    const canvas = document.getElementById('canvas');
-    const ctx = canvas.getContext('2d');
-
-    function resize() {
-      canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight;
-    }
-    window.addEventListener('resize', resize);
-    resize();
-
-    // Игрок
-    const player = { x: canvas.width / 2, y: canvas.height / 2 + 100, size: 40, speed: 5, color: '#00aaff' };
-
-    let currentScene = 'room';
-    let interacted = false; // флаг, что юзер тапнул
-
-    // Объекты
-    const objects = {
-      room: [{ type: 'door', x: canvas.width - 120, y: canvas.height / 2 - 80, w: 80, h: 160, color: '#8B4513', action: () => { currentScene = 'corridor'; player.x = 150; player.y = canvas.height / 2; showMessage('Ты вышел в коридор...'); } }],
-      corridor: [
-        { type: 'door_back', x: 40, y: canvas.height / 2 - 80, w: 80, h: 160, color: '#8B4513', action: () => { currentScene = 'room'; player.x = canvas.width - 200; player.y = canvas.height / 2; showMessage('Вернулся в комнату'); } },
-        { type: 'door_mom', x: canvas.width - 120, y: canvas.height / 2 - 80, w: 80, h: 160, color: '#8B4513', action: () => showMessage('Дверь мамы закрыта<br>Мамка спит, не буди сука 😴') },
-        { type: 'tv', x: canvas.width / 2 - 200, y: 20, w: 400, h: 220, color: '#111', action: () => showMessage('На ТВ орёт "Экипаж тебе в школу"') }
-      ]
-    };
-
-    let tvIframe = null;
-    function createTV() {
-      if (tvIframe) tvIframe.remove();
-      tvIframe = document.createElement('iframe');
-      tvIframe.style.position = 'absolute';
-      tvIframe.style.top = '20px';
-      tvIframe.style.left = '50%';
-      tvIframe.style.transform = 'translateX(-50%)';
-      tvIframe.style.width = '400px';
-      tvIframe.style.height = '220px';
-      tvIframe.style.border = 'none';
-      tvIframe.style.zIndex = '5';
-      tvIframe.style.pointerEvents = 'all';
-      tvIframe.src = 'https://www.youtube-nocookie.com/embed/-D-YcXanLcM?autoplay=1&mute=1&loop=1&playlist=-D-YcXanLcM&controls=1&modestbranding=1&rel=0';
-      tvIframe.setAttribute('allow', 'autoplay; encrypted-media');
-      tvIframe.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
-      tvIframe.allowFullscreen = true;
-      document.body.appendChild(tvIframe);
-    }
-
-    function showMessage(text, duration = 6000) {
-      const msg = document.getElementById('message');
-      msg.innerHTML = text;
-      msg.style.display = 'block';
-      setTimeout(() => msg.style.display = 'none', duration);
-    }
-
-    // Клавиши + touch
-    const keys = {};
-    window.addEventListener('keydown', e => keys[e.code] = true);
-    window.addEventListener('keyup', e => keys[e.code] = false);
-
-    let touchStartX = 0, touchStartY = 0;
-    canvas.addEventListener('touchstart', e => {
-      if (e.touches.length) {
-        touchStartX = e.touches[0].clientX;
-        touchStartY = e.touches[0].clientY;
-        interacted = true; // любой тап — взаимодействие
-        checkUnmute();
-      }
-    });
-    canvas.addEventListener('touchmove', e => {
-      if (e.touches.length) {
-        const dx = e.touches[0].clientX - touchStartX;
-        const dy = e.touches[0].clientY - touchStartY;
-        player.x += dx * 0.15;
-        player.y += dy * 0.15;
-        touchStartX = e.touches[0].clientX;
-        touchStartY = e.touches[0].clientY;
+    startBtn.addEventListener('click', async () => {
+      startBtn.style.display = 'none';
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
+        document.getElementById('video').srcObject = stream;
+        initHands();
+      } catch (err) {
+        alert('Камера не открылась: ' + err);
       }
     });
 
-    // Виртуальная E
-    document.getElementById('virtual-e').addEventListener('touchstart', () => {
-      keys['KeyE'] = true;
-      interacted = true;
-      checkUnmute();
-    });
-    document.getElementById('virtual-e').addEventListener('touchend', () => keys['KeyE'] = false);
+    function initHands() {
+      const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/${file}`});
 
-    // Большая кнопка unmute
-    const unmuteBtn = document.getElementById('unmute-all-btn');
-    unmuteBtn.addEventListener('click', () => {
-      interacted = true;
-      if (tvIframe) tvIframe.src = tvIframe.src.replace('&mute=1', '');
-      unmuteBtn.style.display = 'none';
-      showMessage('Звук включён! (если не слышно — тапни ещё раз по экрану)');
-    });
-
-    function checkUnmute() {
-      if (interacted && tvIframe && tvIframe.src.includes('&mute=1')) {
-        tvIframe.src = tvIframe.src.replace('&mute=1', '');
-        unmuteBtn.style.display = 'none';
-      }
-    }
-
-    // Цикл
-    function gameLoop() {
-      ctx.fillStyle = currentScene === 'room' ? '#222244' : '#333355';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-      ctx.fillStyle = '#334455';
-      ctx.fillRect(0, 0, canvas.width, 60);
-      ctx.fillRect(0, canvas.height - 60, canvas.width, 60);
-      ctx.fillRect(0, 0, 60, canvas.height);
-      ctx.fillRect(canvas.width - 60, 0, 60, canvas.height);
-
-      objects[currentScene].forEach(obj => {
-        ctx.fillStyle = obj.color;
-        ctx.fillRect(obj.x, obj.y, obj.w || 80, obj.h || 80);
+      hands.setOptions({
+        maxNumHands: 2,
+        modelComplexity: 1,
+        minDetectionConfidence: 0.7,
+        minTrackingConfidence: 0.7
       });
 
-      ctx.fillStyle = player.color;
-      ctx.fillRect(player.x - player.size/2, player.y - player.size/2, player.size, player.size);
+      hands.onResults(onResults);
 
-      if (keys['KeyW'] || keys['ArrowUp']) player.y -= player.speed;
-      if (keys['KeyS'] || keys['ArrowDown']) player.y += player.speed;
-      if (keys['KeyA'] || keys['ArrowLeft']) player.x -= player.speed;
-      if (keys['KeyD'] || keys['ArrowRight']) player.x += player.speed;
-
-      player.x = Math.max(60 + player.size/2, Math.min(canvas.width - 60 - player.size/2, player.x));
-      player.y = Math.max(60 + player.size/2, Math.min(canvas.height - 60 - player.size/2, player.y));
-
-      if (keys['KeyE']) {
-        keys['KeyE'] = false;
-        interacted = true;
-        checkUnmute();
-        objects[currentScene].forEach(obj => {
-          if (Math.hypot(player.x - (obj.x + (obj.w||80)/2), player.y - (obj.y + (obj.h||80)/2)) < 100) {
-            if (obj.action) obj.action();
-          }
-        });
-      }
-
-      requestAnimationFrame(gameLoop);
+      const camera = new Camera(document.getElementById('video'), {
+        onFrame: async () => await hands.send({image: document.getElementById('video')}),
+        width: window.innerWidth,
+        height: window.innerHeight
+      });
+      camera.start();
     }
 
-    // ТВ
-    setInterval(() => {
-      if (currentScene === 'corridor' && !tvIframe) createTV();
-      else if (currentScene !== 'corridor' && tvIframe) { tvIframe.remove(); tvIframe = null; }
-    }, 500);
+    function onResults(results) {
+      const canvas = document.getElementById('overlay');
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // История
-    setTimeout(() => {
-      alert("Саня: Бля, надо в школу... А хотя ладно похуй");
+      if (results.multiHandLandmarks) {
+        for (let hand of results.multiHandLandmarks) {
+          // Рисуем скелет рук
+          ctx.strokeStyle = '#00ff00';
+          ctx.lineWidth = 5;
+          ctx.beginPath();
+          for (let i = 0; i < hand.length; i++) {
+            const x = hand[i].x * canvas.width;
+            const y = hand[i].y * canvas.height;
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+          }
+          ctx.stroke();
 
-      setTimeout(() => {
-        alert("Мамка: А НУ ВСТАВАЙ ПИЗДЮК!");
+          // Кружки на пальцах
+          hand.forEach(lm => {
+            ctx.fillStyle = '#ffffff';
+            ctx.beginPath();
+            ctx.arc(lm.x * canvas.width, lm.y * canvas.height, 8, 0, Math.PI*2);
+            ctx.fill();
+          });
 
-        const mom = document.createElement('iframe');
-        mom.style.display = 'none';
-        mom.src = 'https://www.youtube-nocookie.com/embed/6RAzJHW1bqc?autoplay=1&mute=1&start=0&end=9&referrerpolicy=strict-origin-when-cross-origin';
-        document.body.appendChild(mom);
+          // Pinch detection: thumb (4) и index (8)
+          const thumb = hand[4];
+          const index = hand[8];
+          const dist = Math.hypot(thumb.x - index.x, thumb.y - index.y, thumb.z - index.z);
 
-        setTimeout(() => {
-          mom.remove();
-          alert("Саня: Да нахуй она вообще нужна...");
-        }, 9000);
-
-        setTimeout(() => alert("Мамка уходит..."), 12000);
-        setTimeout(() => {
-          alert("Саня: Сука...");
-          unmuteBtn.style.display = 'block'; // показываем большую кнопку
-        }, 14000);
-      }, 3000);
-    }, 4000);
-
-    gameLoop();
+          if (dist < 0.05 && !pinchActive) {
+            pinchActive = true;
+            sad.currentTime = 0;
+            sad.play().catch(() => console.log('Звук заблочен'));
+            msg.style.display = 'block';
+            setTimeout(() => {
+              msg.style.display = 'none';
+              pinchActive = false;
+            }, 3000);
+          }
+        }
+      }
+    }
   </script>
 </body>
 </html>
